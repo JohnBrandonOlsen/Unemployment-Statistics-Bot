@@ -1,0 +1,612 @@
+import requests
+import json
+# from configparser import ConfigParser
+
+# import praw
+from bs4 import BeautifulSoup
+
+def find_current_month(soup):
+    months_soup = soup.findAll('th', 'stubhead')
+    months = []
+    for month in months_soup[2:]:
+        if month.text[:month.text.index(" ")] == "Jan":
+            months.append("January")
+        elif month.text[:month.text.index(" ")] == "Feb":
+            months.append("February")
+        elif month.text[:month.text.index(" ")] == "Mar":
+            months.append("March")
+        elif month.text[:month.text.index(" ")] == "Apr":
+            months.append("April")
+        elif month.text[:month.text.index(" ")] == "Aug":
+            months.append("August")
+        elif month.text[:month.text.index(" ")] == "Sept":
+            months.append("September")
+        elif month.text[:month.text.index(" ")] == "Oct":
+            months.append("October")
+        elif month.text[:month.text.index(" ")] == "Nov":
+            months.append("November")
+        elif month.text[:month.text.index(" ")] == "Dec":
+            months.append("December")
+        else:
+            months.append(month.text[:month.text.index(" ")])
+
+    current_month = months[-1]
+    prev_month = months[-2]
+
+    return current_month, prev_month
+
+def gen_datavalue_list(soup):
+    datavalue_list_soup = soup.findAll('span', 'datavalue')
+    datavalue_list = []
+    for datavalue in datavalue_list_soup:
+        datavalue_list.append(datavalue.text)
+
+    return datavalue_list
+
+def gen_industry_list(soup):
+    industry_list_soup = soup.findAll('p', 'sub0')[2:]
+
+    industry_list = []
+
+    for industry in industry_list_soup:
+        if "(3)" in industry.text:
+            industry_list.append(industry.text[:industry.text.index("(")])
+
+    return industry_list
+
+def shorten_dv_list(datavalue_list):
+    shortened_dv_list = []
+
+    for datavalue in datavalue_list:
+        if "," in datavalue:
+            datavalue = datavalue[:datavalue.index(",") - 1] + datavalue[datavalue.index(",") + 1:]
+            if "," in datavalue:
+                datavalue = datavalue[:datavalue.index(",") - 1] + datavalue[datavalue.index(",") + 1:]
+        if "(p)" in datavalue:
+            shortened_dv_list.append(round(float(datavalue[datavalue.index(")") + 1:]), 1))
+        else:
+            shortened_dv_list.append(round(float(datavalue), 1))
+
+    return shortened_dv_list
+
+def gen_employment_changes(industry_list, shortened_dv_list):
+    employment_change = {}
+    prev_month_employment_change = {}
+
+    for industry in industry_list:
+        if industry_list.index(industry) == 0:
+            change = shortened_dv_list[23 + (6 * (industry_list.index(industry) + 1))] - shortened_dv_list[23 + (5 * (industry_list.index(industry) + 1))]
+        else:
+            change = shortened_dv_list[(23 + 6) + (12 * (industry_list.index(industry)))] - shortened_dv_list[(23 + 5) + (12 * (industry_list.index(industry)))]
+
+        employment_change[industry] = change
+
+    for industry in industry_list:
+        if industry_list.index(industry) == 0:
+            change = shortened_dv_list[23 + (5 * (industry_list.index(industry) + 1))] - shortened_dv_list[23 + (4 * (industry_list.index(industry) + 1))]
+        else:
+            change = shortened_dv_list[(23 + 5) + (12 * (industry_list.index(industry)))] - shortened_dv_list[(23 + 4) + (12 * (industry_list.index(industry)))]
+
+        prev_month_employment_change[industry] = change
+
+
+
+    return employment_change, prev_month_employment_change
+
+def gen_significant_changes(employment_change, prev_month_employment_change, shortened_dv_list):
+    previous_topline_employment_number = shortened_dv_list[10]
+    prev_month_previous_topline_employment_number = shortened_dv_list[9]
+
+    significant_changes = {}
+    for change in employment_change:
+        if abs(employment_change[change]) > previous_topline_employment_number * 0.005:
+            significant_changes[change] = employment_change[change]
+
+    prev_month_significant_changes = {}
+    for change in prev_month_employment_change:
+        if abs(prev_month_employment_change[change]) > prev_month_previous_topline_employment_number * 0.005:
+            prev_month_significant_changes[change] = prev_month_employment_change[change]
+
+    return significant_changes, prev_month_significant_changes
+
+def create_title(soup, city):
+    updated = soup.find('span', attrs={'class': 'update'}).text[20:].strip()
+
+    title = "Updated " + city + " Unemployment Figures | released " + updated
+
+    return title
+
+def gen_topline_employment_change(shortened_dv_list):
+    topline_employment_change = round((shortened_dv_list[11] - shortened_dv_list[10]) * 1000)
+    prev_topline_employment_change = round((shortened_dv_list[10] - shortened_dv_list[9]) * 1000)
+
+    return topline_employment_change, prev_topline_employment_change
+
+def gen_labor_force_change(shortened_dv_list):
+    labor_force_change = round((shortened_dv_list[5] - shortened_dv_list[4]) * 1000)
+    prev_labor_force_change = round((shortened_dv_list[4] - shortened_dv_list[3]) * 1000)
+
+    return labor_force_change, prev_labor_force_change
+
+def gen_unemployment_rate_change(shortened_dv_list):
+    unemployment_rate_change = round(shortened_dv_list[23] - shortened_dv_list[22], 1)
+    prev_unemployment_rate_change = round(shortened_dv_list[22] - shortened_dv_list[21], 1)
+
+    return unemployment_rate_change, prev_unemployment_rate_change
+
+def gen_city_details(city):
+    with open(city + ".json", "r") as f:
+        city_details = json.load(f)
+
+    return city_details
+
+def post_constructor(city, city_details):
+    last_month_updated = city_details["last_month_updated"]
+
+    unemployed = requests.get(city_details['msa_site'])
+    soup = BeautifulSoup(unemployed.text, "html5lib")
+
+    current_month, prev_month = find_current_month(soup)
+    datavalue_list = gen_datavalue_list(soup)
+    if last_month_updated != current_month and "(p)" in datavalue_list[23]:
+        industry_list = gen_industry_list(soup)
+        shortened_dv_list = shorten_dv_list(datavalue_list)
+        employment_change, prev_month_employment_change = gen_employment_changes(industry_list, shortened_dv_list)
+        significant_changes, prev_month_significant_changes = gen_significant_changes(employment_change, prev_month_employment_change, shortened_dv_list)
+        topline_employment_change, prev_topline_employment_change = gen_topline_employment_change(shortened_dv_list)
+        labor_force_change, prev_labor_force_change = gen_labor_force_change(shortened_dv_list)
+        unemployment_rate_change, prev_unemployment_rate_change = gen_unemployment_rate_change(shortened_dv_list)
+        unemployment_rate = shortened_dv_list[23]
+        prev_unemployment_rate = shortened_dv_list[22]
+
+        title = create_title(soup, city)
+
+        post = "[Official unemployment figures for the " + city + \
+        " economy](" + city_details['msa_site'] + \
+        ") were updated today. Numbers for " + prev_month + \
+        " have been finalized and preliminary figures for " + \
+        current_month + " have now been made available.\n\n\n" + "**" + \
+        prev_month + "**\n\nThe unemployment rate "
+        if prev_unemployment_rate_change > 0:
+            post = post + "increased to " + str(prev_unemployment_rate) + "% in " + \
+            prev_month + ". "
+            if prev_topline_employment_change > 0:
+                post = post + "{:,}".format(prev_topline_employment_change) + \
+                " positions were added, but " + "{:,}".format(abs(prev_labor_force_change)) + \
+                " workers entering the labor force caused the unemployment rate to increase. "
+            elif prev_topline_employment_change == 0:
+                post = post + "Employment was unchanged, but " + \
+                "{:,}".format(abs(prev_labor_force_change)) + \
+                " workers entering the labor force caused the unemployment rate to increase. "
+            elif prev_topline_employment_change < 0:
+                if prev_labor_force_change > 0:
+                    post = post + "{:,}".format(abs(prev_topline_employment_change)) + \
+                    " positions were lost, and " + "{:,}".format(prev_labor_force_change) + \
+                    " workers entered the labor force causing the unemployment rate increase. "
+                elif prev_labor_force_change < 0:
+                    post = post + "{:,}".format(abs(prev_topline_employment_change)) + \
+                    " positions were lost, and " + "{:,}".format(abs(prev_labor_force_change)) + \
+                    " workers left the labor force causing the unemployment rate increase. "
+                elif prev_labor_force_change == 0:
+                    post = post + "{:,}".format(abs(prev_topline_employment_change)) + \
+                    " positions were lost, and " + \
+                    " the labor force was unchanged so the unemployment rate rose. "
+        elif prev_unemployment_rate_change < 0:
+            post = post + "fell to " + str(prev_unemployment_rate) + "% in " + \
+            prev_month + ". "
+            if prev_topline_employment_change < 0:
+                post = post + "{:,}".format(abs(prev_topline_employment_change)) + \
+                " positions were lost, but " + "{:,}".format(abs(prev_labor_force_change)) + \
+                " workers exiting the labor force caused the unemployment rate to decrease. "
+            elif prev_topline_employment_change == 0:
+                post = post + "Employment was unchanged, but " + \
+                "{:,}".format(abs(prev_labor_force_change)) + \
+                " workers exiting the labor force caused the unemployment rate to decrease. "
+            elif prev_topline_employment_change > 0:
+                if prev_labor_force_change > 0:
+                    post = post + "{:,}".format(prev_topline_employment_change) + \
+                    " positions were added, with only " + "{:,}".format(prev_labor_force_change) + \
+                    " workers entering the labor force causing the unemployment rate decrease. "
+                elif prev_labor_force_change < 0:
+                    post = post + "{:,}".format(prev_topline_employment_change) + \
+                    " positions were added, and " + "{:,}".format(abs(prev_labor_force_change)) + \
+                    " workers left the labor force causing the unemployment rate decrease. "
+                elif prev_labor_force_change == 0:
+                    post = post + "{:,}".format(prev_topline_employment_change) + \
+                    " positions were added, and " + \
+                    " the labor force was unchanged so the unemployment rate fell. "
+        elif prev_unemployment_rate_change == 0:
+            post = post + "remained flat at " + str(prev_unemployment_rate) + "% in " + \
+            prev_month + ". "
+            if prev_topline_employment_change < 0:
+                post = post + "{:,}".format(abs(prev_topline_employment_change)) + \
+                " positions were lost, but " + "{:,}".format(abs(prev_labor_force_change)) + \
+                " workers exiting the labor force balanced out the unemployment rate. "
+            elif prev_topline_employment_change == 0:
+                post = post + "Employment was unchanged, and "
+                if prev_labor_force_change > 0:
+                    post = post + "{:,}".format(abs(prev_labor_force_change)) + \
+                    " workers entering the labor force was not enough to change the unemployment rate. "
+                if prev_labor_force_change < 0:
+                    post = post + "{:,}".format(abs(prev_labor_force_change)) + \
+                    " workers leaving the labor force was not enough to change the unemployment rate. "
+                if prev_labor_force_change == 0:
+                    post = post + "{:,}".format(abs(prev_labor_force_change)) + \
+                    " the labor force figure was also unchanged. "
+            elif prev_topline_employment_change > 0:
+                post = post + "{:,}".format(abs(prev_topline_employment_change)) + \
+                " positions were added, but " + "{:,}".format(abs(prev_labor_force_change)) + \
+                " workers entering the labor force balanced out the unemployment rate. "
+        if "Total Nonfarm" in prev_month_significant_changes:
+            prev_nonfarm_change = round(prev_month_significant_changes.pop("Total Nonfarm") * 1000)
+            if prev_nonfarm_change > 0:
+                post = post + "Nonfarm payrolls increased by " + "{:,}".format(prev_nonfarm_change) + ". "
+            else:
+                post = post + "Nonfarm payrolls fell by " + "{:,}".format(abs(prev_nonfarm_change)) + ". "
+            prev_sig_industry_list = []
+            prev_sig_changes_list = []
+            for industry in prev_month_significant_changes:
+                prev_sig_industry_list.append(industry)
+            for change in prev_month_significant_changes:
+                prev_sig_changes_list.append(round(prev_month_significant_changes[change] * 1000))
+            if len(prev_month_significant_changes) == 0:
+                post = post + "No individual sector saw significant employment changes. "
+            elif len(prev_month_significant_changes) == 1:
+                post = post + "The only individual sector with significant " + \
+                "employment changes was " + prev_sig_industry_list[0] + " "
+                if prev_sig_changes_list[0] > 0:
+                    post = post + "which added " + "{:,}".format(prev_sig_changes_list[0]) + \
+                    " positions. "
+                elif prev_sig_changes_list[0] < 0:
+                    post = post + "which lost " + "{:,}".format(abs(prev_sig_changes_list[0])) + \
+                    " positions. "
+            else:
+                prev_positive_changes = []
+                prev_positive_changes_industries = []
+                prev_negative_changes = []
+                prev_negative_changes_industries = []
+                for industry in prev_sig_industry_list:
+                    if prev_sig_changes_list[prev_sig_industry_list.index(industry)] > 0:
+                        prev_positive_changes.append(round(prev_sig_changes_list[prev_sig_industry_list.index(industry)]))
+                        prev_positive_changes_industries.append(prev_sig_industry_list[prev_sig_industry_list.index(industry)])
+                    elif prev_sig_changes_list[prev_sig_industry_list.index(industry)] < 0:
+                        prev_negative_changes.append(round(abs(prev_sig_changes_list[prev_sig_industry_list.index(industry)])))
+                        prev_negative_changes_industries.append(prev_sig_industry_list[prev_sig_industry_list.index(industry)])
+
+                if len(prev_positive_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "increase in employment was " + prev_positive_changes_industries[0] + \
+                    " adding " + "{:,}".format(prev_positive_changes[0]) + " positions. "
+                elif len(prev_positive_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant additions include "
+                    for industry in prev_positive_changes_industries:
+                        if industry == prev_positive_changes_industries[-1] and len(prev_positive_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " adding " + \
+                            "{:,}".format(prev_positive_changes[-1]) + " positions. "
+                        elif industry == prev_positive_changes_industries[-1]:
+                            post = post + "and " + industry + " adding " + "{:,}".format(prev_positive_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " adding " + \
+                            "{:,}".format(prev_positive_changes[prev_positive_changes_industries.index(industry)]) + \
+                            " positions, "
+
+                if len(prev_negative_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "losses in employment was " + prev_negative_changes_industries[0] + \
+                    " falling by " + "{:,}".format(prev_negative_changes[0]) + " positions. "
+                elif len(prev_negative_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant losses include "
+                    for industry in prev_negative_changes_industries:
+                        if industry == prev_negative_changes_industries[-1] and len(prev_negative_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " falling by " + \
+                            "{:,}".format(prev_negative_changes[-1]) + " positions. "
+                        elif industry == prev_negative_changes_industries[-1]:
+                            post = post + "and " + industry + " falling by " + "{:,}".format(prev_negative_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " falling by " + \
+                            "{:,}".format(prev_negative_changes[prev_negative_changes_industries.index(industry)]) + \
+                            " positions, "
+        else:
+            post = post + "The overall Nonfarm Payrolls figure did not change significantly. "
+            prev_sig_industry_list = []
+            prev_sig_changes_list = []
+            for industry in prev_month_significant_changes:
+                prev_sig_industry_list.append(industry)
+            for change in prev_month_significant_changes:
+                prev_sig_changes_list.append(round(prev_month_significant_changes[change] * 1000))
+            if len(prev_month_significant_changes) == 0:
+                post = post[:len(post) - 2] + " and no individual sector saw significant employment changes. "
+            elif len(prev_month_significant_changes) == 1:
+                post = post + "The only individual sector with significant " + \
+                "employment changes was " + prev_sig_industry_list[0] + " "
+                if prev_sig_changes_list[0] > 0:
+                    post = post + "which added " + "{:,}".format(prev_sig_changes_list[0]) + \
+                    " positions. "
+                elif prev_sig_changes_list[0] < 0:
+                    post = post + "which lost " + "{:,}".format(abs(prev_sig_changes_list[0])) + \
+                    " positions. "
+            else:
+                prev_positive_changes = []
+                prev_positive_changes_industries = []
+                prev_negative_changes = []
+                prev_negative_changes_industries = []
+                for industry in prev_sig_industry_list:
+                    if prev_sig_changes_list[prev_sig_industry_list.index(industry)] > 0:
+                        prev_positive_changes.append(round(prev_sig_changes_list[prev_sig_industry_list.index(industry)]))
+                        prev_positive_changes_industries.append(prev_sig_industry_list[prev_sig_industry_list.index(industry)])
+                    elif prev_sig_changes_list[prev_sig_industry_list.index(industry)] < 0:
+                        prev_negative_changes.append(round(abs(prev_sig_changes_list[prev_sig_industry_list.index(industry)])))
+                        prev_negative_changes_industries.append(prev_sig_industry_list[prev_sig_industry_list.index(industry)])
+
+                if len(prev_positive_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "increase in employment was " + prev_positive_changes_industries[0] + \
+                    " adding " + "{:,}".format(prev_positive_changes[0]) + " positions. "
+                elif len(prev_positive_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant additions include "
+                    for industry in prev_positive_changes_industries:
+                        if industry == prev_positive_changes_industries[-1] and len(prev_positive_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " adding " + \
+                            "{:,}".format(prev_positive_changes[-1]) + " positions. "
+                        elif industry == prev_positive_changes_industries[-1]:
+                            post = post + "and " + industry + " adding " + "{:,}".format(prev_positive_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " adding " + \
+                            "{:,}".format(prev_positive_changes[prev_positive_changes_industries.index(industry)]) + \
+                            " positions, "
+
+                if len(prev_negative_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "losses in employment was " + prev_negative_changes_industries[0] + \
+                    " falling by " + "{:,}".format(prev_negative_changes[0]) + " positions. "
+                elif len(prev_negative_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant losses include "
+                    for industry in prev_negative_changes_industries:
+                        if industry == prev_negative_changes_industries[-1] and len(prev_negative_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " falling by " + \
+                            "{:,}".format(prev_negative_changes[-1]) + " positions. "
+                        elif industry == prev_negative_changes_industries[-1]:
+                            post = post + "and " + industry + " falling by " + "{:,}".format(prev_negative_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " falling by " + \
+                            "{:,}".format(prev_negative_changes[prev_negative_changes_industries.index(industry)]) + \
+                            " positions, "
+        post = post + "\n\n\n" + "**" + \
+        current_month + "** (preliminary)\n\nThe unemployment rate "
+        if unemployment_rate_change > 0:
+            post = post + "increased to " + str(unemployment_rate) + "% in " + \
+            current_month + ". "
+            if topline_employment_change > 0:
+                post = post + "{:,}".format(topline_employment_change) + \
+                " positions were added, but " + "{:,}".format(abs(labor_force_change)) + \
+                " workers entering the labor force caused the unemployment rate to increase. "
+            elif topline_employment_change == 0:
+                post = post + "Employment was unchanged, but " + \
+                "{:,}".format(abs(labor_force_change)) + \
+                " workers entering the labor force caused the unemployment rate to increase. "
+            elif topline_employment_change < 0:
+                if labor_force_change > 0:
+                    post = post + "{:,}".format(abs(topline_employment_change)) + \
+                    " positions were lost, and " + "{:,}".format(labor_force_change) + \
+                    " workers entered the labor force causing the unemployment rate increase. "
+                elif labor_force_change < 0:
+                    post = post + "{:,}".format(abs(topline_employment_change)) + \
+                    " positions were lost, and " + "{:,}".format(abs(labor_force_change)) + \
+                    " workers left the labor force causing the unemployment rate increase. "
+                elif labor_force_change == 0:
+                    post = post + "{:,}".format(abs(topline_employment_change)) + \
+                    " positions were lost, and " + \
+                    " the labor force was unchanged so the unemployment rate rose. "
+        elif unemployment_rate_change < 0:
+            post = post + "fell to " + str(unemployment_rate) + "% in " + \
+            current_month + ". "
+            if topline_employment_change < 0:
+                post = post + "{:,}".format(abs(topline_employment_change)) + \
+                " positions were lost, but " + "{:,}".format(abs(labor_force_change)) + \
+                " workers exiting the labor force caused the unemployment rate to decrease. "
+            elif topline_employment_change == 0:
+                post = post + "Employment was unchanged, but " + \
+                "{:,}".format(abs(labor_force_change)) + \
+                " workers exiting the labor force caused the unemployment rate to decrease. "
+            elif topline_employment_change > 0:
+                if labor_force_change > 0:
+                    post = post + "{:,}".format(topline_employment_change) + \
+                    " positions were added, with only " + "{:,}".format(labor_force_change) + \
+                    " workers entering the labor force causing the unemployment rate decrease. "
+                elif labor_force_change < 0:
+                    post = post + "{:,}".format(topline_employment_change) + \
+                    " positions were added, and " + "{:,}".format(abs(labor_force_change)) + \
+                    " workers left the labor force causing the unemployment rate decrease. "
+                elif labor_force_change == 0:
+                    post = post + "{:,}".format(topeline_employment_change) + \
+                    " positions were added, and " + \
+                    " the labor force was unchanged so the unemployment rate fell. "
+        elif unemployment_rate_change == 0:
+            post = post + "remained flat at " + str(unemployment_rate) + "% in " + \
+            current_month + ". "
+            if topline_employment_change < 0:
+                post = post + "{:,}".format(abs(topline_employment_change)) + \
+                " positions were lost, but " + "{:,}".format(abs(labor_force_change)) + \
+                " workers exiting the labor force balanced out the unemployment rate. "
+            elif topline_employment_change == 0:
+                post = post + "Employment was unchanged, and "
+                if labor_force_change > 0:
+                    post = post + "{:,}".format(abs(labor_force_change)) + \
+                    " workers entering the labor force was not enough to change the unemployment rate. "
+                if labor_force_change < 0:
+                    post = post + "{:,}".format(abs(labor_force_change)) + \
+                    " workers leaving the labor force was not enough to change the unemployment rate. "
+                if labor_force_change == 0:
+                    post = post + "{:,}".format(abs(labor_force_change)) + \
+                    " the labor force figure was also unchanged. "
+            elif topline_employment_change > 0:
+                post = post + "{:,}".format(abs(topline_employment_change)) + \
+                " positions were added, but " + "{:,}".format(abs(labor_force_change)) + \
+                " workers entering the labor force balanced out the unemployment rate. "
+        if "Total Nonfarm" in significant_changes:
+            nonfarm_change = round(significant_changes.pop("Total Nonfarm") * 1000)
+            if nonfarm_change > 0:
+                post = post + "Nonfarm payrolls increased by " + "{:,}".format(nonfarm_change) + ". "
+            else:
+                post = post + "Nonfarm payrolls fell by " + "{:,}".format(abs(nonfarm_change)) + ". "
+            sig_industry_list = []
+            sig_changes_list = []
+            for industry in significant_changes:
+                sig_industry_list.append(industry)
+            for change in significant_changes:
+                sig_changes_list.append(round(significant_changes[change] * 1000))
+            if len(significant_changes) == 0:
+                post = post + "No individual sector saw significant employment changes. "
+            elif len(significant_changes) == 1:
+                post = post + "The only individual sector with significant " + \
+                "employment changes was " + sig_industry_list[0] + " "
+                if sig_changes_list[0] > 0:
+                    post = post + "which added " + "{:,}".format(sig_changes_list[0]) + \
+                    " positions. "
+                elif sig_changes_list[0] < 0:
+                    post = post + "which lost " + "{:,}".format(abs(sig_changes_list[0])) + \
+                    " positions. "
+            else:
+                positive_changes = []
+                positive_changes_industries = []
+                negative_changes = []
+                negative_changes_industries = []
+                for industry in sig_industry_list:
+                    if sig_changes_list[sig_industry_list.index(industry)] > 0:
+                        positive_changes.append(round(sig_changes_list[sig_industry_list.index(industry)]))
+                        positive_changes_industries.append(sig_industry_list[sig_industry_list.index(industry)])
+                    elif sig_changes_list[sig_industry_list.index(industry)] < 0:
+                        negative_changes.append(round(abs(sig_changes_list[sig_industry_list.index(industry)])))
+                        negative_changes_industries.append(sig_industry_list[sig_industry_list.index(industry)])
+
+                if len(positive_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "increase in employment was " + positive_changes_industries[0] + \
+                    " adding " + "{:,}".format(positive_changes[0]) + " positions. "
+                elif len(positive_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant additions include "
+                    for industry in positive_changes_industries:
+                        if industry == positive_changes_industries[-1] and len(positive_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " adding " + \
+                            "{:,}".format(positive_changes[-1]) + " positions. "
+                        elif industry == positive_changes_industries[-1]:
+                            post = post + "and " + industry + " adding " + "{:,}".format(positive_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " adding " + \
+                            "{:,}".format(positive_changes[positive_changes_industries.index(industry)]) + \
+                            " positions, "
+
+                if len(negative_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "losses in employment was " + negative_changes_industries[0] + \
+                    " falling by " + "{:,}".format(negative_changes[0]) + " positions. "
+                elif len(negative_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant losses include "
+                    for industry in negative_changes_industries:
+                        if industry == negative_changes_industries[-1] and len(negative_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " falling by " + \
+                            "{:,}".format(negative_changes[-1]) + " positions. "
+                        elif industry == negative_changes_industries[-1]:
+                            post = post + "and " + industry + " falling by " + "{:,}".format(negative_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " falling by " + \
+                            "{:,}".format(negative_changes[negative_changes_industries.index(industry)]) + \
+                            " positions, "
+        else:
+            post = post + "The overall Nonfarm Payrolls figure did not change significantly. "
+            sig_industry_list = []
+            sig_changes_list = []
+            for industry in significant_changes:
+                sig_industry_list.append(industry)
+            for change in significant_changes:
+                sig_changes_list.append(round(significant_changes[change] * 1000))
+            if len(significant_changes) == 0:
+                post = post[:len(post) - 2] + " and no individual sector saw significant employment changes. "
+            elif len(significant_changes) == 1:
+                post = post + "The only individual sector with significant " + \
+                "employment changes was " + sig_industry_list[0] + " "
+                if sig_changes_list[0] > 0:
+                    post = post + "which added " + "{:,}".format(sig_changes_list[0]) + \
+                    " positions. "
+                elif sig_changes_list[0] < 0:
+                    post = post + "which lost " + "{:,}".format(abs(sig_changes_list[0])) + \
+                    " positions. "
+            else:
+                positive_changes = []
+                positive_changes_industries = []
+                negative_changes = []
+                negative_changes_industries = []
+                for industry in sig_industry_list:
+                    if sig_changes_list[sig_industry_list.index(industry)] > 0:
+                        positive_changes.append(round(sig_changes_list[sig_industry_list.index(industry)]))
+                        positive_changes_industries.append(sig_industry_list[sig_industry_list.index(industry)])
+                    elif sig_changes_list[sig_industry_list.index(industry)] < 0:
+                        negative_changes.append(round(abs(sig_changes_list[sig_industry_list.index(industry)])))
+                        negative_changes_industries.append(sig_industry_list[sig_industry_list.index(industry)])
+
+                if len(positive_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "increase in employment was " + positive_changes_industries[0] + \
+                    " adding " + "{:,}".format(positive_changes[0]) + " positions. "
+                elif len(positive_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant additions include "
+                    for industry in positive_changes_industries:
+                        if industry == positive_changes_industries[-1] and len(positive_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " adding " + \
+                            "{:,}".format(positive_changes[-1]) + " positions. "
+                        elif industry == positive_changes_industries[-1]:
+                            post = post + "and " + industry + " adding " + "{:,}".format(positive_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " adding " + \
+                            "{:,}".format(positive_changes[positive_changes_industries.index(industry)]) + \
+                            " positions, "
+
+                if len(negative_changes_industries) == 1:
+                    post = post +  "The only individual sector with a significant " + \
+                    "losses in employment was " + negative_changes_industries[0] + \
+                    " falling by " + "{:,}".format(negative_changes[0]) + " positions. "
+                elif len(negative_changes_industries) > 1:
+                    post = post[:len(post)] + "Labor categories with significant losses include "
+                    for industry in negative_changes_industries:
+                        if industry == negative_changes_industries[-1] and len(negative_changes_industries) == 2:
+                            post = post[:len(post) - 2] + " and " + industry + " falling by " + \
+                            "{:,}".format(negative_changes[-1]) + " positions. "
+                        elif industry == negative_changes_industries[-1]:
+                            post = post + "and " + industry + " falling by " + "{:,}".format(negative_changes[-1]) + \
+                            " positions. "
+                        else:
+                            post = post + industry + " falling by " + \
+                            "{:,}".format(negative_changes[negative_changes_industries.index(industry)]) + \
+                            " positions, "
+
+        post = post + "\n\n\n^*" + city_details["reddit_account"] + " ^is ^a ^public ^service ^account " + \
+                "^committed ^to ^making ^" + city_details["subreddit"] + " ^a ^better ^informed " + \
+                "^community."
+
+        return title, post
+
+def main():
+    with open("cities.json", "r") as cities_list:
+        cities = json.load(cities_list)
+
+    for city in cities:
+        city_details = gen_city_details(city)
+        try:
+            title, post = post_constructor(city, city_details)
+        except TypeError:
+            pass
+        try:
+            #print(title)
+            print(post)
+        except UnboundLocalError:
+            pass
+
+if __name__ == '__main__':
+    main()
