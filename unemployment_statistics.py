@@ -1,8 +1,8 @@
 import requests
 import json
-# from configparser import ConfigParser
+from configparser import ConfigParser
 
-# import praw
+import praw
 from bs4 import BeautifulSoup
 
 def find_current_month(soup):
@@ -140,14 +140,17 @@ def gen_city_details(city):
 
     return city_details
 
-def post_constructor(city, city_details):
+def update_city_details(city_details, current_month):
+    city_details['last_month_updated'] = current_month
+
+    with open(city + ".json", "w") as f:
+        json.dump(city_details, f)
+
+def post_constructor(city, city_details, soup, current_month, prev_month):
     last_month_updated = city_details["last_month_updated"]
 
-    unemployed = requests.get(city_details['msa_site'])
-    soup = BeautifulSoup(unemployed.text, "html5lib")
-
-    current_month, prev_month = find_current_month(soup)
     datavalue_list = gen_datavalue_list(soup)
+
     if last_month_updated != current_month and "(p)" in datavalue_list[23]:
         industry_list = gen_industry_list(soup)
         shortened_dv_list = shorten_dv_list(datavalue_list)
@@ -158,8 +161,6 @@ def post_constructor(city, city_details):
         unemployment_rate_change, prev_unemployment_rate_change = gen_unemployment_rate_change(shortened_dv_list)
         unemployment_rate = shortened_dv_list[23]
         prev_unemployment_rate = shortened_dv_list[22]
-
-        title = create_title(soup, city)
 
         post = "[Official unemployment figures for the " + city + \
         " economy](" + city_details['msa_site'] + \
@@ -590,7 +591,19 @@ def post_constructor(city, city_details):
                 "^committed ^to ^making ^" + city_details["subreddit"] + " ^a ^better ^informed " + \
                 "^community."
 
-        return title, post
+        return post
+
+def post_to_reddit(city_details, city, title, post):
+    config = ConfigParser()
+    config.read('statistics.config')
+
+    reddit = praw.Reddit(client_id=config['General']['client_id'],
+                         client_secret=config['General']['client_secret'],
+                         password=config[city]['password'],
+                         user_agent=config['General']['user_agent'],
+                         username=config[city]['username'])
+
+    reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = False)
 
 def main():
     with open("cities.json", "r") as cities_list:
@@ -598,15 +611,19 @@ def main():
 
     for city in cities:
         city_details = gen_city_details(city)
+        unemployed = requests.get(city_details['msa_site'])
+        soup = BeautifulSoup(unemployed.text, "html5lib")
+        current_month, prev_month = find_current_month(soup)
+
         try:
-            title, post = post_constructor(city, city_details)
+            post = post_constructor(city, city_details, soup, current_month, prev_month)
+            title = create_title(soup, city)
         except TypeError:
             pass
-        try:
-            #print(title)
-            print(post)
-        except UnboundLocalError:
-            pass
+
+        if post != None:
+            post_to_reddit(city_details, city, title, post)
+            update_city_details(city_details, current_month)
 
 if __name__ == '__main__':
     main()
