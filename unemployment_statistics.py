@@ -1,6 +1,7 @@
 import requests
 import json
 from configparser import ConfigParser
+import time
 
 import praw
 from bs4 import BeautifulSoup
@@ -86,10 +87,7 @@ def gen_employment_changes(industry_list, shortened_dv_list):
             change = shortened_dv_list[23 + (5 * (industry_list.index(industry) + 1))] - shortened_dv_list[23 + (4 * (industry_list.index(industry) + 1))]
         else:
             change = shortened_dv_list[(23 + 5) + (12 * (industry_list.index(industry)))] - shortened_dv_list[(23 + 4) + (12 * (industry_list.index(industry)))]
-
         prev_month_employment_change[industry] = change
-
-
 
     return employment_change, prev_month_employment_change
 
@@ -109,10 +107,10 @@ def gen_significant_changes(employment_change, prev_month_employment_change, sho
 
     return significant_changes, prev_month_significant_changes
 
-def create_title(soup, city):
-    updated = soup.find('span', attrs={'class': 'update'}).text[20:].strip()
-
-    title = "Updated " + city + " Unemployment Figures | released " + updated
+def create_title(soup, city, city_details):
+    updated = soup.find('span', attrs={'class': 'update'}).text
+    updated = updated[updated.index("on:") + 3:].strip()
+    title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + updated
 
     return title
 
@@ -140,7 +138,7 @@ def gen_city_details(city):
 
     return city_details
 
-def update_city_details(city_details, current_month):
+def update_city_details(city_details, city, current_month):
     city_details['last_month_updated'] = current_month
 
     with open(city + ".json", "w") as f:
@@ -148,7 +146,6 @@ def update_city_details(city_details, current_month):
 
 def post_constructor(city, city_details, soup, current_month, prev_month):
     last_month_updated = city_details["last_month_updated"]
-
     datavalue_list = gen_datavalue_list(soup)
 
     if last_month_updated != current_month and "(p)" in datavalue_list[23]:
@@ -162,7 +159,7 @@ def post_constructor(city, city_details, soup, current_month, prev_month):
         unemployment_rate = shortened_dv_list[23]
         prev_unemployment_rate = shortened_dv_list[22]
 
-        post = "[Official unemployment figures for the " + city + \
+        post = "[Official unemployment figures for the " + city_details['city_name'] + \
         " economy](" + city_details['msa_site'] + \
         ") were updated today. Numbers for " + prev_month + \
         " have been finalized and preliminary figures for " + \
@@ -519,6 +516,7 @@ def post_constructor(city, city_details, soup, current_month, prev_month):
                             post = post + industry + " falling by " + \
                             "{:,}".format(negative_changes[negative_changes_industries.index(industry)]) + \
                             " positions, "
+
         else:
             post = post + "The overall Nonfarm Payrolls figure did not change significantly. "
             sig_industry_list = []
@@ -616,14 +614,31 @@ def main():
         current_month, prev_month = find_current_month(soup)
 
         try:
+            print("Attempting to update " + city)
             post = post_constructor(city, city_details, soup, current_month, prev_month)
-            title = create_title(soup, city)
+            title = create_title(soup, city, city_details)
         except TypeError:
             pass
 
         if post != None:
-            post_to_reddit(city_details, city, title, post)
-            update_city_details(city_details, current_month)
+            print("Updating " + city)
+            while True:
+                try:
+                    post_to_reddit(city_details, city, title, post)
+                    break
+                except Exception as timer:
+                    if "seconds" in str(timer):
+                        wait_time = 1
+                        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minute.")
+                        time.sleep(60)
+                    else:
+                        wait_time = int(str(timer)[str(timer).index("minutes") - 2:str(timer).index("minutes") - 1])
+                        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
+                        time.sleep(wait_time * 60)
+
+            update_city_details(city_details, city, current_month)
+        else:
+            print("No update required at this time.")
 
 if __name__ == '__main__':
     main()
