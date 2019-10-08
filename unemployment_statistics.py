@@ -640,7 +640,7 @@ def main():
                         print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minute.")
                         time.sleep(60)
                     else:
-                        wait_time = int(str(timer)[str(timer).index("minutes") - 2:str(timer).index("minutes") - 1] + 1)
+                        wait_time = int(str(timer)[str(timer).index("minutes") - 2:str(timer).index("minutes") - 1]) + 1
                         if wait_time == 0:
                             wait_time = 11
                         print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
