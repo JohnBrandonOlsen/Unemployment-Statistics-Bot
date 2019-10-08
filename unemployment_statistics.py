@@ -2,6 +2,7 @@ import requests
 import json
 from configparser import ConfigParser
 import time
+import datetime
 
 import praw
 from bs4 import BeautifulSoup
@@ -59,14 +60,18 @@ def shorten_dv_list(datavalue_list):
     shortened_dv_list = []
 
     for datavalue in datavalue_list:
+        if "(p)" in datavalue:
+            datavalue = datavalue[datavalue.index(")") + 1:]
+        if "(P)" in datavalue:
+            datavalue = datavalue[datavalue.index(")") + 1:]
+        if "(4)" in datavalue:
+            datavalue = datavalue[datavalue.index(")") + 1:]
         if "," in datavalue:
             datavalue = datavalue[:datavalue.index(",") - 1] + datavalue[datavalue.index(",") + 1:]
             if "," in datavalue:
                 datavalue = datavalue[:datavalue.index(",") - 1] + datavalue[datavalue.index(",") + 1:]
-        if "(p)" in datavalue:
-            shortened_dv_list.append(round(float(datavalue[datavalue.index(")") + 1:]), 1))
-        else:
-            shortened_dv_list.append(round(float(datavalue), 1))
+
+        shortened_dv_list.append(round(float(datavalue), 1))
 
     return shortened_dv_list
 
@@ -108,9 +113,12 @@ def gen_significant_changes(employment_change, prev_month_employment_change, sho
     return significant_changes, prev_month_significant_changes
 
 def create_title(soup, city, city_details):
-    updated = soup.find('span', attrs={'class': 'update'}).text
-    updated = updated[updated.index("on:") + 3:].strip()
-    title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + updated
+    try:
+        updated = soup.find('span', attrs={'class': 'update'}).text
+        updated = updated[updated.index("on:") + 3:].strip()
+        title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + updated
+    except AttributeError:
+        title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + datetime.date.today().strftime("%B %d, %Y")
 
     return title
 
@@ -133,7 +141,7 @@ def gen_unemployment_rate_change(shortened_dv_list):
     return unemployment_rate_change, prev_unemployment_rate_change
 
 def gen_city_details(city):
-    with open(city + ".json", "r") as f:
+    with open("/path/to" + city + ".json", "r") as f:
         city_details = json.load(f)
 
     return city_details
@@ -141,7 +149,7 @@ def gen_city_details(city):
 def update_city_details(city_details, city, current_month):
     city_details['last_month_updated'] = current_month
 
-    with open(city + ".json", "w") as f:
+    with open("/path/to/" + city + ".json", "w") as f:
         json.dump(city_details, f)
 
 def post_constructor(city, city_details, soup, current_month, prev_month):
@@ -593,10 +601,10 @@ def post_constructor(city, city_details, soup, current_month, prev_month):
 
 def post_to_reddit(city_details, city, title, post):
     config = ConfigParser()
-    config.read('statistics.config')
+    config.read('/path/to/statistics.config')
 
-    reddit = praw.Reddit(client_id=config['General']['client_id'],
-                         client_secret=config['General']['client_secret'],
+    reddit = praw.Reddit(client_id=config[city_details['group']]['client_id'],
+                         client_secret=config[city_details['group']]['client_secret'],
                          password=config[city]['password'],
                          user_agent=config['General']['user_agent'],
                          username=config[city]['username'])
@@ -604,7 +612,7 @@ def post_to_reddit(city_details, city, title, post):
     reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = False)
 
 def main():
-    with open("cities.json", "r") as cities_list:
+    with open("/path/to/cities.json", "r") as cities_list:
         cities = json.load(cities_list)
 
     for city in cities:
@@ -627,12 +635,14 @@ def main():
                     post_to_reddit(city_details, city, title, post)
                     break
                 except Exception as timer:
-                    if "seconds" in str(timer):
+                    if "second" in str(timer):
                         wait_time = 1
                         print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minute.")
                         time.sleep(60)
                     else:
-                        wait_time = int(str(timer)[str(timer).index("minutes") - 2:str(timer).index("minutes") - 1])
+                        wait_time = int(str(timer)[str(timer).index("minutes") - 2:str(timer).index("minutes") - 1] + 1)
+                        if wait_time == 0:
+                            wait_time = 11
                         print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
                         time.sleep(wait_time * 60)
 
