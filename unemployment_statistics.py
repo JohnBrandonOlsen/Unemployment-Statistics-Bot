@@ -141,7 +141,7 @@ def gen_unemployment_rate_change(shortened_dv_list):
     return unemployment_rate_change, prev_unemployment_rate_change
 
 def gen_city_details(city):
-    with open("/path/to" + city + ".json", "r") as f:
+    with open("/path/to/" + city + ".json", "r") as f:
         city_details = json.load(f)
 
     return city_details
@@ -599,7 +599,21 @@ def post_constructor(city, city_details, soup, current_month, prev_month):
 
         return post
 
-def post_to_reddit(city_details, city, title, post):
+def check_messages(city_details, reddit):
+    for message in reddit.inbox.unread():
+        if message.was_comment:
+            message.mark_read()
+        else:
+            if city_details['special_case'] == "Manual":
+                reddit.redditor('Statistics_Admin').message(message.author.name, message.body)
+            else:
+                auto_response = city_details['reddit_account'] + " is an unmonitored account, " + \
+                "please contact /u/Statistics_Admin to reach the creator with any comments, " + \
+                "complaints, or feedback."
+                message.reply(auto_response)
+                message.mark_read()
+
+def reddit_login(city_details, city):
     config = ConfigParser()
     config.read('/path/to/statistics.config')
 
@@ -609,11 +623,31 @@ def post_to_reddit(city_details, city, title, post):
                          user_agent=config['General']['user_agent'],
                          username=config[city]['username'])
 
+    return reddit
+
+def post_to_reddit(reddit, city_details, title, post):
+
     reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = False)
+
+def pause_for_timer(timer):
+    if "second" in str(timer):
+        print("Posting rate limit exceeded, sleeping for 1 minute.")
+        time.sleep(60)
+    else:
+        wait_time = ""
+        for x in str(timer):
+            if x.isdigit():
+                wait_time = wait_time + x
+        wait_time = int(wait_time) + 1
+        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
+        time.sleep(wait_time * 60)
 
 def main():
     with open("/path/to/cities.json", "r") as cities_list:
         cities = json.load(cities_list)
+
+    with open("/path/to/special_cases.json", "r") as cities_list:
+        special_cases = json.load(cities_list)
 
     for city in cities:
         city_details = gen_city_details(city)
@@ -622,33 +656,52 @@ def main():
         current_month, prev_month = find_current_month(soup)
 
         try:
-            print("Attempting to update " + city)
+            print("Checking " + city + "...")
             post = post_constructor(city, city_details, soup, current_month, prev_month)
             title = create_title(soup, city, city_details)
         except TypeError:
             pass
 
-        if post != None:
-            print("Updating " + city)
-            while True:
-                try:
-                    post_to_reddit(city_details, city, title, post)
-                    break
-                except Exception as timer:
-                    if "second" in str(timer):
-                        wait_time = 1
-                        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minute.")
-                        time.sleep(60)
-                    else:
-                        wait_time = int(str(timer)[str(timer).index("minute") - 2:str(timer).index("minute") - 1]) + 1
-                        if wait_time == 0:
-                            wait_time = 11
-                        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
-                        time.sleep(wait_time * 60)
+        reddit = reddit_login(city_details, city)
 
-            update_city_details(city_details, city, current_month)
+        if city in special_cases:
+            if city_details['special_case'] == "Quarterly":
+                if      current_month == "March" \
+                    or  current_month == "June" \
+                    or  current_month == "September" \
+                    or  current_month == "December":
+
+                    if post != None:
+                        print("Updating " + city)
+                        while True:
+                            try:
+                                post_to_reddit(reddit, city_details, title, post)
+                                break
+                            except Exception as timer:
+                                pause_for_timer(timer)
+
+            elif city_details['special_case'] == "Manual":
+                if post != None:
+                    print("Sending " + city + " post to /u/Statistics_Admin.")
+                    reddit.redditor('Statistics_Admin').message(title, post)
+            else:
+                print("No update required at this time.")
+
         else:
-            print("No update required at this time.")
+            if post != None:
+                print("Updating " + city)
+                while True:
+                    try:
+                        post_to_reddit(reddit, city_details, title, post)
+                        break
+                    except Exception as timer:
+                        pause_for_timer(timer)
+
+                update_city_details(city_details, city, current_month)
+            else:
+                print("No update required at this time.")
+
+        check_messages(city_details, reddit)
 
 if __name__ == '__main__':
     main()
