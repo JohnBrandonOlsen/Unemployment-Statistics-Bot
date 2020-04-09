@@ -69,18 +69,14 @@ def shorten_dv_list(datavalue_list):
     shortened_dv_list = []
 
     for datavalue in datavalue_list:
-        if "(p)" in datavalue:
-            datavalue = datavalue[datavalue.index(")") + 1:]
-        if "(P)" in datavalue:
-            datavalue = datavalue[datavalue.index(")") + 1:]
-        if "(4)" in datavalue:
-            datavalue = datavalue[datavalue.index(")") + 1:]
-        if "," in datavalue:
-            datavalue = datavalue[:datavalue.index(",") - 1] + datavalue[datavalue.index(",") + 1:]
-            if "," in datavalue:
-                datavalue = datavalue[:datavalue.index(",") - 1] + datavalue[datavalue.index(",") + 1:]
+        num = ""
+        for character in datavalue:
+            if character == ".":
+                num = num + character
+            if character.isdigit():
+                num = num + character
 
-        shortened_dv_list.append(round(float(datavalue), 1))
+        shortened_dv_list.append(round(float(num), 1))
 
     return shortened_dv_list
 
@@ -351,7 +347,7 @@ def changes_body(post, significant_changes):
             post = sig_changes_section(post, significant_changes)
         else:
             post = (f"{post} Nonfarm payrolls fell by "
-            f"{nonfarm_change:,}.")
+            f"{abs(nonfarm_change):,}.")
             post = sig_changes_section(post, significant_changes)
     else:
         post = (f"{post} The overall Nonfarm Payrolls figure did not change "
@@ -410,7 +406,11 @@ def check_messages(city_details, reddit):
     /u/Statistics_Admin for review."""
 
     for message in reddit.inbox.unread():
-        reddit.redditor('Statistics_Admin').message(message.author.name, message.body)
+        try:
+            reddit.redditor('Statistics_Admin').message(message.author.name, message.body)
+        except AttributeError:
+            reddit.redditor('Statistics_Admin').message("UNKNOWN SENDER", message.body)
+        message.mark_read()
 
 def reddit_login(city_details, city):
     """Logs in to reddit with current city's account and returns a praw instance."""
@@ -488,7 +488,7 @@ def main():
                             else:
                                 break
 
-                            update_city_details(city_details, city, current_month)
+                        update_city_details(city_details, city, current_month)
 
                     else:
                         print("No update required at this time.")
@@ -503,8 +503,17 @@ def main():
                 while True:
                     try:
                         post_to_reddit(reddit, city_details, title, post)
-                    except Exception as timer:
-                        pause_for_timer(timer)
+                    except praw.exceptions.APIException as e:
+                        if "SUBREDDIT_NOTALLOWED" in str(e):
+                            print(f"{city_details['subreddit']} "
+                            f"is not allowing these posts...")
+                            reddit.redditor('Statistics_Admin').message(
+                            f"{city_details['subreddit']}",
+                            f"{city_details['subreddit']} is not allowing "
+                            f"these posts...")
+                            break
+                        if "timer" in str(e):
+                            pause_for_timer(e)
                     else:
                         break
 
