@@ -50,15 +50,26 @@ def gen_datavalue_list(soup):
 
     return datavalue_list
 
+def gen_industry_list_identifier(soup):
+    """Find the identifier for the list of industries on the page."""
+
+    footnote_list_soup = soup.findAll('tr', 'footnotes')
+
+    location = str(footnote_list_soup).index("Number of jobs") - 8
+
+    return str(footnote_list_soup)[location : location + 3]
+
 def gen_industry_list(soup):
     """Create a list of the industries displayed on the BLS EAG page."""
+
+    identifier = gen_industry_list_identifier(soup)
 
     industry_list_soup = soup.findAll('p', 'sub0')[2:]
 
     industry_list = []
 
     for industry in industry_list_soup:
-        if "(3)" in industry.text:
+        if identifier in industry.text:
             industry_list.append(industry.text[:industry.text.index("(")])
 
     return industry_list
