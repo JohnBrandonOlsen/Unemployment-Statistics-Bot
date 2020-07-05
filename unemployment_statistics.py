@@ -53,11 +53,17 @@ def gen_datavalue_list(soup):
 def gen_industry_list_identifier(soup):
     """Find the identifier for the list of industries on the page."""
 
-    footnote_list_soup = soup.findAll('tr', 'footnotes')
+    try:
+        footnote_list_soup = soup.findAll('tr', 'footnotes')
+        location = str(footnote_list_soup).index("Number of jobs") - 8
+        identifier = str(footnote_list_soup)[location : location + 3]
 
-    location = str(footnote_list_soup).index("Number of jobs") - 8
+    except ValueError:
+        footnote_list_soup = soup.findAll('p', 'sub0')
+        location = str(footnote_list_soup).index("bottom of the table") + 21
+        identifier = str("(" + str(footnote_list_soup)[location : location + 1] + ")")
 
-    return str(footnote_list_soup)[location : location + 3]
+    return identifier
 
 def gen_industry_list(soup):
     """Create a list of the industries displayed on the BLS EAG page."""
