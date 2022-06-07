@@ -335,7 +335,7 @@ def sig_changes_section(post, significant_changes):
                     f"positions,")
 
         if len(negative_changes_industries) == 1:
-            post = (f"{post} The only individual sector with a significant losses "
+            post = (f"{post} The only individual sector with a significant loss "
             f"in employment was {negative_changes_industries[0]} falling by "
             f"{negative_changes[0]:,} positions.")
         elif len(negative_changes_industries) > 1:
@@ -433,7 +433,7 @@ def reddit_login(city_details, city):
     """Logs in to reddit with current city's account and returns a praw instance."""
 
     config = ConfigParser()
-    config.read('/path/to/statistics.config')
+    config.read('/path/to/config/file')
 
     reddit = praw.Reddit(client_id=config[city_details['group']]['client_id'],
                          client_secret=config[city_details['group']]['client_secret'],
@@ -443,10 +443,10 @@ def reddit_login(city_details, city):
 
     return reddit
 
-def post_to_reddit(reddit, city_details, title, post):
+def post_to_reddit(reddit, city_details, title, post, flair):
     """Submits completed post to relevant city, community, or state subreddit."""
 
-    reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = True)
+    reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = True, flair_id = flair)
     reddit.redditor('Statistics_Admin').message(f"{datetime.datetime.now()}", f"Post submitted to {city_details['subreddit']}")
 
 
@@ -466,11 +466,27 @@ def pause_for_timer(timer):
         print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
         time.sleep(wait_time * 60)
 
+def select_flair(reddit, city_details):
+    """Identify flair if needed for posting"""
+    flairs = reddit.subreddit(city_details['sub']).flair.link_templates
+
+    if flairs != None:
+        try:
+            for flair in flairs:
+                if "Discussion" in flair['text']:
+                    return flair['id']
+                if "Living Here" in flair['text']:
+                    return flair['id']
+                if "News" in flair['text']:
+                    return flair['id']
+        except:
+            pass
+
 def main():
-    with open("/path/to/cities.json", "r") as cities_list:
+    with open("/path/to/", "r") as cities_list:
         cities = json.load(cities_list)
 
-    with open("/path/to/special_cases.json", "r") as cities_list:
+    with open("/path/to/", "r") as cities_list:
         special_cases = json.load(cities_list)
 
     for city in cities:
@@ -489,6 +505,7 @@ def main():
         reddit = reddit_login(city_details, city)
 
         if post != None:
+            flair = select_flair(reddit, city_details)
             if city in special_cases:
                 if city_details['special_case'] == "Quarterly":
                     if      current_month == "March" \
@@ -499,7 +516,7 @@ def main():
                         print("Updating " + city)
                         while True:
                             try:
-                                post_to_reddit(reddit, city_details, title, post)
+                                post_to_reddit(reddit, city_details, title, post, flair)
                             except Exception as timer:
                                 pause_for_timer(timer)
                             else:
@@ -519,7 +536,7 @@ def main():
                 print("Updating " + city)
                 while True:
                     try:
-                        post_to_reddit(reddit, city_details, title, post)
+                        post_to_reddit(reddit, city_details, title, post, flair)
                     except praw.exceptions.APIException as e:
                         if "SUBREDDIT_NOTALLOWED" in str(e):
                             print(f"{city_details['subreddit']} "
