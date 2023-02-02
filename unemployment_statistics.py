@@ -537,7 +537,7 @@ def main():
                 while True:
                     try:
                         post_to_reddit(reddit, city_details, title, post, flair)
-                    except praw.exceptions.APIException as e:
+                    except praw.exceptions.RedditAPIException as e:
                         if "SUBREDDIT_NOTALLOWED" in str(e):
                             print(f"{city_details['subreddit']} "
                             f"is not allowing these posts...")
