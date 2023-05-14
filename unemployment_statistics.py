@@ -5,128 +5,89 @@ import time
 import datetime
 
 import praw
-from bs4 import BeautifulSoup
 
-def find_current_month(soup):
-    """Pull the list of months from the current BLS EAG page and adjust them
-        for the months that are abbreviated."""
+def find_current_month(json_data):
+    """Pull the list of months from the BLS API."""
 
-    months_soup = soup.findAll('th', 'stubhead')
-    months = []
-    for month in months_soup[2:]:
-        if month.text[:month.text.index(" ")] == "Jan":
-            months.append("January")
-        elif month.text[:month.text.index(" ")] == "Feb":
-            months.append("February")
-        elif month.text[:month.text.index(" ")] == "Mar":
-            months.append("March")
-        elif month.text[:month.text.index(" ")] == "Apr":
-            months.append("April")
-        elif month.text[:month.text.index(" ")] == "Aug":
-            months.append("August")
-        elif month.text[:month.text.index(" ")] == "Sept":
-            months.append("September")
-        elif month.text[:month.text.index(" ")] == "Oct":
-            months.append("October")
-        elif month.text[:month.text.index(" ")] == "Nov":
-            months.append("November")
-        elif month.text[:month.text.index(" ")] == "Dec":
-            months.append("December")
-        else:
-            months.append(month.text[:month.text.index(" ")])
-
-    current_month = months[-1]
-    prev_month = months[-2]
+    current_month = json_data["Results"]["series"][0]["data"][0]["periodName"]
+    prev_month = json_data["Results"]["series"][0]["data"][1]["periodName"]
 
     return current_month, prev_month
 
-def gen_datavalue_list(soup):
-    """Create a list of all the datavalues on the BLS EAG webpage."""
+def gen_BLS_codes(city_details, industry_codes):
+    """Create list of seriesId codes for the BLS API."""
 
-    datavalue_list_soup = soup.findAll('span', 'datavalue')
-    datavalue_list = []
-    for datavalue in datavalue_list_soup:
-        datavalue_list.append(datavalue.text)
+    BLS_codes = ['LAU' + city_details["Area_Type"] + city_details["BLS_code"] + '00000003',
+                 'LAU' + city_details["Area_Type"] + city_details["BLS_code"] + '00000004',
+                 'LAU' + city_details["Area_Type"] + city_details["BLS_code"] + '00000005',
+                 'LAU' + city_details["Area_Type"] + city_details["BLS_code"] + '00000006',
+                 'SMU' + city_details["BLS_code"] + industry_codes["Total Nonfarm"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Mining, Logging and Construction"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Manufacturing"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Trade, Transportation, and Utilities"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Information"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Financial Activities"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Professional and Business Services"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Private Education and Health Services"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Leisure and Hospitality"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Other Services"],
+                 'SMU' + city_details["BLS_code"] + industry_codes["Government"]]
+    
+    return BLS_codes
 
-    return datavalue_list
+def post_constructor(industry_codes, city_details, json_data, current_month, prev_month):
+    """Create the post body based on updated unemployment figures from the BLS API."""
 
-def gen_industry_list_identifier(soup):
-    """Find the identifier for the list of industries on the page."""
+    last_month_updated = city_details["last_month_updated"]
 
-    try:
-        footnote_list_soup = soup.findAll('tr', 'footnotes')
-        location = str(footnote_list_soup).index("Number of jobs") - 8
-        identifier = str(footnote_list_soup)[location : location + 3]
+    if last_month_updated != current_month:
 
-    except ValueError:
-        footnote_list_soup = soup.findAll('p', 'sub0')
-        location = str(footnote_list_soup).index("bottom of the table") + 21
-        identifier = str("(" + str(footnote_list_soup)[location : location + 1] + ")")
+        significant_changes, prev_month_significant_changes = gen_significant_changes(json_data, industry_codes)
+        
+        unemployment_rate_change = float(json_data["Results"]["series"][0]["data"][0]["calculations"]['net_changes']['1'])
+        prev_unemployment_rate_change = float(json_data["Results"]["series"][0]["data"][1]["calculations"]['net_changes']['1'])
+        topline_employment_change = int(json_data["Results"]["series"][2]["data"][0]["calculations"]['net_changes']['1'])
+        prev_topline_employment_change = int(json_data["Results"]["series"][2]["data"][1]["calculations"]['net_changes']['1'])
+        labor_force_change = int(json_data["Results"]["series"][3]["data"][0]["calculations"]['net_changes']['1'])
+        prev_labor_force_change = int(json_data["Results"]["series"][3]["data"][1]["calculations"]['net_changes']['1'])
+        unemployment_rate = json_data["Results"]["series"][0]["data"][0]["value"]
+        prev_unemployment_rate = json_data["Results"]["series"][0]["data"][1]["value"]
 
-    return identifier
+        post = (f"[Official unemployment figures for the "
+        f"{city_details['city_name']} economy]({city_details['msa_site']}) "
+        f"were updated today. Numbers for {prev_month} have been finalized "
+        f"and preliminary figures for {current_month} have now been made "
+        f"available.\n\n\n**{prev_month}**\n\nThe unemployment rate")
 
-def gen_industry_list(soup):
-    """Create a list of the industries displayed on the BLS EAG page."""
+        post = topline_body(post, prev_unemployment_rate_change,
+        prev_topline_employment_change, prev_labor_force_change,
+        prev_unemployment_rate, prev_month)
 
-    identifier = gen_industry_list_identifier(soup)
+        post = changes_body(post, prev_month_significant_changes)
 
-    industry_list_soup = soup.findAll('p', 'sub0')[2:]
+        post = (f"{post}\n\n\n**{current_month}** (preliminary)\n\nThe "
+        f"unemployment rate")
 
-    industry_list = []
+        post = topline_body(post, unemployment_rate_change,
+        topline_employment_change, labor_force_change, unemployment_rate,
+        current_month)
 
-    for industry in industry_list_soup:
-        if identifier in industry.text:
-            industry_list.append(industry.text[:industry.text.index("(")])
+        post = changes_body(post, significant_changes)
 
-    return industry_list
+        post = (f"{post}\n\n\n^*{city_details['reddit_account']} ^is ^a "
+        f"^public ^service ^account ^committed ^to ^making "
+        f"^{city_details['subreddit']} ^a ^better ^informed ^community.")
 
-def shorten_dv_list(datavalue_list):
-    """Remove any unnecessary characters from datavalues."""
+        return post
 
-    shortened_dv_list = []
-
-    for datavalue in datavalue_list:
-        num = ""
-        for character in datavalue:
-            if character == ".":
-                num = num + character
-            if character.isdigit():
-                num = num + character
-
-        shortened_dv_list.append(round(float(num), 1))
-
-    return shortened_dv_list
-
-def gen_employment_changes(industry_list, shortened_dv_list):
-    """Create dictionaries pairing each industry with its change in employment
-    for the current and previous month."""
-
-    employment_change = {}
-    prev_month_employment_change = {}
-
-    for industry in industry_list:
-        if industry_list.index(industry) == 0:
-            change = shortened_dv_list[23 + (6 * (industry_list.index(industry) + 1))] - shortened_dv_list[23 + (5 * (industry_list.index(industry) + 1))]
-        else:
-            change = shortened_dv_list[(23 + 6) + (12 * (industry_list.index(industry)))] - shortened_dv_list[(23 + 5) + (12 * (industry_list.index(industry)))]
-
-        employment_change[industry] = change
-
-    for industry in industry_list:
-        if industry_list.index(industry) == 0:
-            change = shortened_dv_list[23 + (5 * (industry_list.index(industry) + 1))] - shortened_dv_list[23 + (4 * (industry_list.index(industry) + 1))]
-        else:
-            change = shortened_dv_list[(23 + 5) + (12 * (industry_list.index(industry)))] - shortened_dv_list[(23 + 4) + (12 * (industry_list.index(industry)))]
-        prev_month_employment_change[industry] = change
-
-    return employment_change, prev_month_employment_change
-
-def gen_significant_changes(employment_change, prev_month_employment_change, shortened_dv_list):
+def gen_significant_changes(json_data, industry_codes):
     """Create dictionaries for industries with employment changes representing
     a change greater than 0.5% of the total previous workforce."""
+    
+    employment_change, prev_month_employment_change = gen_employment_changes(json_data, industry_codes)
 
-    previous_topline_employment_number = shortened_dv_list[10]
-    prev_month_previous_topline_employment_number = shortened_dv_list[9]
+    previous_topline_employment_number = int(json_data['Results']['series'][2]['data'][1]['value'])
+    prev_month_previous_topline_employment_number = int(json_data['Results']['series'][2]['data'][2]['value'])
 
     significant_changes = {}
     for change in employment_change:
@@ -140,60 +101,71 @@ def gen_significant_changes(employment_change, prev_month_employment_change, sho
 
     return significant_changes, prev_month_significant_changes
 
-def create_title(soup, city, city_details):
-    """Create the title for the post."""
+def gen_employment_changes(json_data, industry_codes):
+    """Create dictionaries pairing each industry with its change in employment
+    for the current and previous month."""
 
-    try:
-        updated = soup.find('span', attrs={'class': 'update'}).text
-        updated = updated[updated.index("on:") + 3:].strip()
-        title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + updated
-    except AttributeError:
-        title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + datetime.date.today().strftime("%B %d, %Y")
+    employment_change = {}
+    prev_month_employment_change = {}
 
-    return title
+    for series in json_data['Results']['series']:
+        if industry_codes["Total Nonfarm"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Total Nonfarm"] = float(change) * 1000
+            prev_month_employment_change["Total Nonfarm"] = float(prev_change) * 1000
+        if industry_codes["Mining, Logging and Construction"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Mining, Logging and Construction"] = float(change)
+            prev_month_employment_change["Mining, Logging and Construction"] = float(prev_change)
+        if industry_codes["Manufacturing"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Manufacturing"] = float(change)
+            prev_month_employment_change["Manufacturing"] = float(prev_change)
+        if industry_codes["Trade, Transportation, and Utilities"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Trade, Transportation, and Utilities"] = float(change)
+            prev_month_employment_change["Trade, Transportation, and Utilities"] = float(prev_change)
+        if industry_codes["Information"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Information"] = float(change)
+            prev_month_employment_change["Information"] = float(prev_change)
+        if industry_codes["Financial Activities"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Financial Activities"] = float(change)
+            prev_month_employment_change["Financial Activities"] = float(prev_change)
+        if industry_codes["Professional and Business Services"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Professional and Business Services"] = float(change)
+            prev_month_employment_change["Professional and Business Services"] = float(prev_change)
+        if industry_codes["Private Education and Health Services"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Private Education and Health Services"] = float(change)
+            prev_month_employment_change["Private Education and Health Services"] = float(prev_change)
+        if industry_codes["Leisure and Hospitality"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Leisure and Hospitality"] = float(change)
+            prev_month_employment_change["Leisure and Hospitality"] = float(prev_change)
+        if industry_codes["Other Services"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Other Services"] = float(change)
+            prev_month_employment_change["Other Services"] = float(prev_change)
+        if industry_codes["Government"] in series['seriesID'] and len(series['data']) > 1:
+            change = series['data'][0]['calculations']['net_changes']['1']
+            prev_change = series['data'][1]['calculations']['net_changes']['1']
+            employment_change["Government"] = float(change)
+            prev_month_employment_change["Government"] = float(prev_change)
 
-def gen_topline_employment_change(shortened_dv_list):
-    """Create variables for the topline employment change for the current and
-    previous months."""
-
-    topline_employment_change = round((shortened_dv_list[11] - shortened_dv_list[10]) * 1000)
-    prev_topline_employment_change = round((shortened_dv_list[10] - shortened_dv_list[9]) * 1000)
-
-    return topline_employment_change, prev_topline_employment_change
-
-def gen_labor_force_change(shortened_dv_list):
-    """Create variables for the change in labor force for the current and
-    previous months."""
-
-    labor_force_change = round((shortened_dv_list[5] - shortened_dv_list[4]) * 1000)
-    prev_labor_force_change = round((shortened_dv_list[4] - shortened_dv_list[3]) * 1000)
-
-    return labor_force_change, prev_labor_force_change
-
-def gen_unemployment_rate_change(shortened_dv_list):
-    """Create variables for the change in the unemployment rate for the current
-    and previous months."""
-
-    unemployment_rate_change = round(shortened_dv_list[23] - shortened_dv_list[22], 1)
-    prev_unemployment_rate_change = round(shortened_dv_list[22] - shortened_dv_list[21], 1)
-
-    return unemployment_rate_change, prev_unemployment_rate_change
-
-def gen_city_details(city):
-    """Retrieve previously saved city details."""
-
-    with open("/path/to/" + city + ".json", "r") as f:
-        city_details = json.load(f)
-
-    return city_details
-
-def update_city_details(city_details, city, current_month):
-    """Save updated city details after they have been posted."""
-
-    city_details['last_month_updated'] = current_month
-
-    with open("/path/to/" + city + ".json", "w") as f:
-        json.dump(city_details, f)
+    return employment_change, prev_month_employment_change
 
 def topline_body(post, unemployment_rate_change, topline_employment_change,
                 labor_force_change, unemployment_rate, month):
@@ -278,6 +250,26 @@ def topline_body(post, unemployment_rate_change, topline_employment_change,
 
     return post
 
+def changes_body(post, significant_changes):
+    """Builds the Nonfarm Payrolls sections of the post."""
+
+    if "Total Nonfarm" in significant_changes:
+        nonfarm_change = round(significant_changes.pop("Total Nonfarm"))
+        if nonfarm_change > 0:
+            post = (f"{post} Nonfarm payrolls increased by "
+            f"{nonfarm_change:,}.")
+            post = sig_changes_section(post, significant_changes)
+        else:
+            post = (f"{post} Nonfarm payrolls fell by "
+            f"{abs(nonfarm_change):,}.")
+            post = sig_changes_section(post, significant_changes)
+    else:
+        post = (f"{post} The overall Nonfarm Payrolls figure did not change "
+        f"significantly.")
+        post = sig_changes_section(post, significant_changes)
+
+    return post
+
 def sig_changes_section(post, significant_changes):
     """Evaluates changes in each industry for the month and returns language
     identifying any industry that changed by more than 0.5% of the total
@@ -353,87 +345,11 @@ def sig_changes_section(post, significant_changes):
                     f"positions,")
     return post
 
-def changes_body(post, significant_changes):
-    """Builds the Nonfarm Payrolls sections of the post."""
-
-    if "Total Nonfarm" in significant_changes:
-        nonfarm_change = round(significant_changes.pop("Total Nonfarm") * 1000)
-        if nonfarm_change > 0:
-            post = (f"{post} Nonfarm payrolls increased by "
-            f"{nonfarm_change:,}.")
-            post = sig_changes_section(post, significant_changes)
-        else:
-            post = (f"{post} Nonfarm payrolls fell by "
-            f"{abs(nonfarm_change):,}.")
-            post = sig_changes_section(post, significant_changes)
-    else:
-        post = (f"{post} The overall Nonfarm Payrolls figure did not change "
-        f"significantly.")
-        post = sig_changes_section(post, significant_changes)
-
-    return post
-
-def post_constructor(city, city_details, soup, current_month, prev_month):
-    """Create the post body based on updated unemployment figures found on the
-    BLS EAG site."""
-
-    last_month_updated = city_details["last_month_updated"]
-    datavalue_list = gen_datavalue_list(soup)
-
-    if last_month_updated != current_month and "(p)" in datavalue_list[23].lower():
-        industry_list = gen_industry_list(soup)
-        shortened_dv_list = shorten_dv_list(datavalue_list)
-        employment_change, prev_month_employment_change = gen_employment_changes(industry_list, shortened_dv_list)
-        significant_changes, prev_month_significant_changes = gen_significant_changes(employment_change, prev_month_employment_change, shortened_dv_list)
-        topline_employment_change, prev_topline_employment_change = gen_topline_employment_change(shortened_dv_list)
-        labor_force_change, prev_labor_force_change = gen_labor_force_change(shortened_dv_list)
-        unemployment_rate_change, prev_unemployment_rate_change = gen_unemployment_rate_change(shortened_dv_list)
-        unemployment_rate = shortened_dv_list[23]
-        prev_unemployment_rate = shortened_dv_list[22]
-
-        post = (f"[Official unemployment figures for the "
-        f"{city_details['city_name']} economy]({city_details['msa_site']}) "
-        f"were updated today. Numbers for {prev_month} have been finalized "
-        f"and preliminary figures for {current_month} have now been made "
-        f"available.\n\n\n**{prev_month}**\n\nThe unemployment rate")
-
-        post = topline_body(post, prev_unemployment_rate_change,
-        prev_topline_employment_change, prev_labor_force_change,
-        prev_unemployment_rate, prev_month)
-
-        post = changes_body(post, prev_month_significant_changes)
-
-        post = (f"{post}\n\n\n**{current_month}** (preliminary)\n\nThe "
-        f"unemployment rate")
-
-        post = topline_body(post, unemployment_rate_change,
-        topline_employment_change, labor_force_change, unemployment_rate,
-        current_month)
-
-        post = changes_body(post, significant_changes)
-
-        post = (f"{post}\n\n\n^*{city_details['reddit_account']} ^is ^a "
-        f"^public ^service ^account ^committed ^to ^making "
-        f"^{city_details['subreddit']} ^a ^better ^informed ^community.")
-
-        return post
-
-def check_messages(city_details, reddit):
-    """Check Reddit for any new messages or comments and send them to
-    /u/Statistics_Admin for review."""
-
-    for message in reddit.inbox.unread():
-        try:
-            reddit.redditor('Statistics_Admin').message(message.author.name, message.body)
-        except AttributeError:
-            reddit.redditor('Statistics_Admin').message("UNKNOWN SENDER", message.body)
-        message.mark_read()
-
 def reddit_login(city_details, city):
     """Logs in to reddit with current city's account and returns a praw instance."""
 
     config = ConfigParser()
-    config.read('/path/to/config/file')
+    config.read('/home/closet/Python/UnemploymentStatistics/statistics.config')
 
     reddit = praw.Reddit(client_id=config[city_details['group']]['client_id'],
                          client_secret=config[city_details['group']]['client_secret'],
@@ -442,29 +358,6 @@ def reddit_login(city_details, city):
                          username=config[city]['username'])
 
     return reddit
-
-def post_to_reddit(reddit, city_details, title, post, flair):
-    """Submits completed post to relevant city, community, or state subreddit."""
-
-    reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = True, flair_id = flair)
-    reddit.redditor('Statistics_Admin').message(f"{datetime.datetime.now()}", f"Post submitted to {city_details['subreddit']}")
-
-
-def pause_for_timer(timer):
-    """If posting returns a 'You are doing that too much' message, sets a timer
-    to wait until the account can submit a post."""
-
-    if "second" in str(timer):
-        print("Posting rate limit exceeded, sleeping for 1 minute.")
-        time.sleep(60)
-    else:
-        wait_time = ""
-        for x in str(timer):
-            if x.isdigit():
-                wait_time = wait_time + x
-        wait_time = int(wait_time) + 1
-        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
-        time.sleep(wait_time * 60)
 
 def select_flair(reddit, city_details):
     """Identify flair if needed for posting"""
@@ -482,22 +375,86 @@ def select_flair(reddit, city_details):
         except:
             pass
 
+def update_city_details(city_details, city, current_month):
+    """Save updated city details after they have been posted."""
+
+    city_details['last_month_updated'] = current_month
+
+    with open("/path/to/" + city + ".json", "w") as f:
+        json.dump(city_details, f)
+
+def post_to_reddit(reddit, city_details, title, post, flair):
+    """Submits completed post to relevant city, community, or state subreddit."""
+
+    reddit.subreddit(city_details['sub']).submit(title, selftext = post, send_replies = True, flair_id = flair)
+    reddit.redditor('Statistics_Admin').message(subject = f"{datetime.datetime.now()}", message = f"Post submitted to {city_details['subreddit']}")
+
+def pause_for_timer(timer):
+    """If posting returns a 'You are doing that too much' message, sets a timer
+    to wait until the account can submit a post."""
+
+    if "second" in str(timer):
+        print("Posting rate limit exceeded, sleeping for 1 minute.")
+        time.sleep(60)
+    else:
+        wait_time = ""
+        for x in str(timer):
+            if x.isdigit():
+                wait_time = wait_time + x
+        wait_time = int(wait_time) + 1
+        print("Posting rate limit exceeded, sleeping for " + str(wait_time) + " minutes.")
+        time.sleep(wait_time * 60)
+
+def check_messages(city_details, reddit):
+    """Check Reddit for any new messages or comments and send them to
+    /u/Statistics_Admin for review."""
+
+    for message in reddit.inbox.unread():
+        try:
+            reddit.redditor('Statistics_Admin').message(subject = message.author.name, message = message.body)
+        except AttributeError:
+            reddit.redditor('Statistics_Admin').message(subject = "UNKNOWN SENDER", message = message.body)
+        message.mark_read()
+
 def main():
-    with open("/path/to/", "r") as cities_list:
+    with open("/path/to/cities.json", "r") as cities_list:
         cities = json.load(cities_list)
 
-    with open("/path/to/", "r") as cities_list:
+    with open("/path/to/special_cases.json", "r") as cities_list:
         special_cases = json.load(cities_list)
 
+    with open("/path/to/BLS.json", "r") as Bureau:
+        BLS = json.load(Bureau)
+
+    with open("/path/to/industry_codes.json", "r") as f:
+        industry_codes = json.load(f)
+
     for city in cities:
-        city_details = gen_city_details(city)
-        unemployed = requests.get(city_details['msa_site'])
-        soup = BeautifulSoup(unemployed.text, "html5lib")
-        current_month, prev_month = find_current_month(soup)
+        
+        with open("/path/to/" + city + ".json", "r") as f:
+            city_details = json.load(f)
+
+        BLS_codes = gen_BLS_codes(city_details, industry_codes)
+
+        headers = {'Content-type': 'application/json'}
+        data = json.dumps({"seriesid": BLS_codes,                          
+                                        "endyear": datetime.date.today().year, "startyear": str(int(datetime.date.today().year)-1),
+                                        "registrationkey" : BLS["registrationkey"], "calculations":True})
+        while True:
+            try:
+                p = requests.post('https://api.bls.gov/publicAPI/v2/timeseries/data/', data=data, headers=headers)
+            except requests.exceptions.ConnectionError:
+                time.sleep(3)
+            else:
+                break
+        
+        json_data = json.loads(p.text)
+        
+        current_month, prev_month = find_current_month(json_data)
 
         try:
-            post = post_constructor(city, city_details, soup, current_month, prev_month)
-            title = create_title(soup, city, city_details)
+            post = post_constructor(industry_codes, city_details, json_data, current_month, prev_month)
+            title = "Updated " + city_details['city_name'] + " Unemployment Figures | released " + datetime.date.today().strftime("%B %d, %Y")
         except TypeError:
             pass
 
@@ -529,7 +486,7 @@ def main():
 
                 elif city_details['special_case'] == "Manual":
                     print("Sending " + city + " post to /u/Statistics_Admin.")
-                    reddit.redditor('Statistics_Admin').message(title, post)
+                    reddit.redditor('Statistics_Admin').message(subject = title, message = post)
                     update_city_details(city_details, city, current_month)
 
             else:
@@ -542,8 +499,8 @@ def main():
                             print(f"{city_details['subreddit']} "
                             f"is not allowing these posts...")
                             reddit.redditor('Statistics_Admin').message(
-                            f"{city_details['subreddit']}",
-                            f"{city_details['subreddit']} is not allowing "
+                            subject = f"{city_details['subreddit']}",
+                            message = f"{city_details['subreddit']} is not allowing "
                             f"these posts...")
                             break
                         if "timer" in str(e):
